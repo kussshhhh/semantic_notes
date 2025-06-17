@@ -5,167 +5,132 @@ from src.processing.semantic_analyzer import SemanticAnalyzer
 from src.processing.position_calculator import PositionCalculator
 
 class DataManager:
-    def __init__(self, notes_dir="notes_data/"):
-        self.notes_dir = notes_dir
+    def __init__(self, db_path=None):
+        if db_path is None:
+            # Default path: project_root/notes_db.json
+            # Assuming this file (data_manager.py) is in src/core/
+            self.db_path = os.path.join(os.path.dirname(__file__), '..', '..', 'notes_db.json')
+        else:
+            self.db_path = db_path
+
+        # Ensure the directory for the db_path exists
+        os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+
         # Initialize processing tools
-        # These might fail if dependencies are not installed or models can't be downloaded
         try:
             self.semantic_analyzer = SemanticAnalyzer()
         except Exception as e:
-            print(f"Critical: Failed to initialize SemanticAnalyzer: {e}")
-            self.semantic_analyzer = None # Allow DataManager to operate without it
+            print(f"Warning: Failed to initialize SemanticAnalyzer: {e}. Some functionalities might be limited.")
+            self.semantic_analyzer = None
 
         try:
             self.position_calculator = PositionCalculator()
         except Exception as e:
-            print(f"Critical: Failed to initialize PositionCalculator: {e}")
-            self.position_calculator = None # Allow DataManager to operate without it
+            print(f"Warning: Failed to initialize PositionCalculator: {e}. Some functionalities might be limited.")
+            self.position_calculator = None
 
         self.notes: list[Note] = []
-        os.makedirs(self.notes_dir, exist_ok=True)
-        self._load_all_notes_from_disk()
+        self._load_db()
 
-    def _save_note_to_disk(self, note: Note):
-        """Saves a single Note object to a JSON file in the notes_dir."""
-        if not isinstance(note, Note):
-            print("Error: Attempted to save an invalid object type. Expected Note.")
-            return
-        filepath = os.path.join(self.notes_dir, f"{note.id}.json")
+    def _save_db(self):
+        """Saves all notes to a single JSON file."""
         try:
-            with open(filepath, "w") as f:
-                json.dump(note.to_dict(), f, indent=4)
+            # Create a list of dictionaries from the note objects
+            notes_data = [note.to_dict() for note in self.notes]
+            with open(self.db_path, "w") as f:
+                json.dump(notes_data, f, indent=4)
         except IOError as e:
-            print(f"Error saving note {note.id} to disk: {e}")
+            print(f"Error saving notes to {self.db_path}: {e}")
         except Exception as e:
-            print(f"An unexpected error occurred while saving note {note.id}: {e}")
+            print(f"An unexpected error occurred while saving notes: {e}")
 
-    def _load_note_from_disk(self, note_id: str) -> Note | None:
-        """Loads a single Note object from a JSON file by its ID."""
-        filepath = os.path.join(self.notes_dir, f"{note_id}.json")
-        if not os.path.exists(filepath):
-            # print(f"Note file {note_id}.json not found.")
-            return None
-        try:
-            with open(filepath, "r") as f:
-                data = json.load(f)
-            return Note.from_dict(data)
-        except json.JSONDecodeError as e:
-            print(f"Error decoding JSON from {filepath}: {e}")
-            return None
-        except Exception as e:
-            print(f"An unexpected error occurred while loading note {note_id}: {e}")
-            return None
-
-    def _load_all_notes_from_disk(self):
-        """Loads all notes from JSON files in the notes_dir into self.notes."""
+    def _load_db(self):
+        """Loads all notes from a single JSON file into self.notes."""
         self.notes.clear()
-        if not os.path.exists(self.notes_dir):
-            print(f"Notes directory {self.notes_dir} not found.")
+        if not os.path.exists(self.db_path):
+            print(f"Database file {self.db_path} not found. Initializing with empty notes list.")
             return
 
-        for filename in os.listdir(self.notes_dir):
-            if filename.endswith(".json"):
-                note_id = filename[:-5] # Remove .json extension
-                note = self._load_note_from_disk(note_id)
-                if note:
-                    self.notes.append(note)
-        # print(f"Loaded {len(self.notes)} notes from disk.")
+        try:
+            with open(self.db_path, "r") as f:
+                notes_data = json.load(f)
+                if not isinstance(notes_data, list):
+                    print(f"Error: Expected a list from {self.db_path}, got {type(notes_data)}. Initializing empty.")
+                    self.notes = []
+                    return
+                for note_dict in notes_data:
+                    # Ensure note_dict is a dictionary
+                    if isinstance(note_dict, dict):
+                        self.notes.append(Note.from_dict(note_dict))
+                    else:
+                        print(f"Warning: Skipping non-dictionary item in notes data: {note_dict}")
 
-    def add_new_note(self, content: str) -> Note | None:
+        except json.JSONDecodeError as e:
+            print(f"Error decoding JSON from {self.db_path}: {e}. Initializing with empty notes list.")
+            self.notes = [] # Initialize empty if file is corrupt
+        except Exception as e:
+            print(f"An unexpected error occurred while loading notes from {self.db_path}: {e}")
+            self.notes = []
+
+    def add_note(self, new_note: Note) -> Note | None:
         """
-        Creates a new note, generates its semantic vector, updates positions for all notes,
-        saves the new note and updates other notes with new positions to disk.
+        Adds a pre-created note (with content and embedding) to the list,
+        updates positions for all notes, and saves all notes.
         """
-        if self.semantic_analyzer is None or self.position_calculator is None:
-            print("Error: DataManager is not fully initialized (missing SemanticAnalyzer or PositionCalculator). Cannot add new note.")
-            # Optionally, allow adding note without semantic processing
-            # new_note_basic = Note(content=content)
-            # self.notes.append(new_note_basic)
-            # self._save_note_to_disk(new_note_basic)
-            # print("Warning: Note added without semantic vector or position due to initialization errors.")
-            # return new_note_basic
+        if not isinstance(new_note, Note):
+            print("Error: Attempted to add an invalid object type. Expected Note.")
             return None
 
-        new_note = Note(content=content)
+        if self.position_calculator is None:
+            print("Error: DataManager is not fully initialized (missing PositionCalculator). Cannot process note positions.")
+            # Add note without position calculation and save
+            self.notes.append(new_note)
+            self._save_db()
+            print(f"Warning: Note {new_note.id} added without position calculation due to initialization errors.")
+            return new_note
 
-        # 1. Generate semantic vector for the new note
-        print(f"Generating semantic vector for new note {new_note.id}...")
-        vector = self.semantic_analyzer.generate_embedding(new_note.content)
-        if vector is not None:
-            new_note.semantic_vector = vector
-            print(f"Semantic vector generated for {new_note.id}.")
-        else:
-            print(f"Warning: Could not generate semantic vector for note {new_note.id}. Note will be added without it.")
+        # Add the new note to the internal list
+        # Ensure no duplicate IDs if that's a concern (current Note class generates unique IDs)
+        # For simplicity, we assume IDs are unique or handled by Note class creation
+        self.notes.append(new_note)
 
-        self.notes.append(new_note) # Add to internal list
-
-        # 2. Trigger position recalculation for all notes
+        # Recalculate positions for all notes
         print("Recalculating positions for all notes...")
-        all_valid_vectors = []
-        notes_with_vectors_indices = [] # Keep track of original indices of notes that have vectors
+        all_embeddings = []
+        notes_with_embeddings_indices = []
 
         for i, note in enumerate(self.notes):
-            if note.semantic_vector is not None:
-                all_valid_vectors.append(note.semantic_vector)
-                notes_with_vectors_indices.append(i)
+            if hasattr(note, 'embedding') and note.embedding is not None:
+                all_embeddings.append(note.embedding)
+                notes_with_embeddings_indices.append(i)
             else:
-                # Ensure notes without vectors have their coordinates as None
-                if note.coordinates is not None:
-                    note.coordinates = None
-                    # If coordinates were previously set and now vector is gone, this note needs re-saving
-                    # self._save_note_to_disk(note) # This will be handled by the loop below
+                if hasattr(note, 'position') and note.position is not None:
+                    note.position = None # Clear position if no embedding
 
-        updated_notes_ids = set() # To track which notes get new positions
-
-        if not all_valid_vectors:
-            print("No valid semantic vectors found to calculate positions.")
+        if not all_embeddings:
+            print("No valid embeddings found to calculate positions.")
+            # If the new_note was the first one and has an embedding, its position might be [0,0,0] or similar
+            # This case is handled by the API layer setting a default position if all_embeddings is empty.
+            # For now, if new_note has an embedding but is the only one, it won't get a position from calculator.
+            # The API layer's logic for this will be important.
         else:
-            positions = self.position_calculator.calculate_positions(all_valid_vectors)
-            if positions is not None and len(positions) == len(all_valid_vectors):
+            positions = self.position_calculator.calculate_positions(all_embeddings)
+            if positions is not None and len(positions) == len(all_embeddings):
                 print(f"Positions calculated for {len(positions)} notes.")
-                for i, pos_index in enumerate(notes_with_vectors_indices):
-                    original_note_index = pos_index
-                    # Check if the position actually changed to avoid unnecessary saves
-                    if self.notes[original_note_index].coordinates != positions[i]:
-                        self.notes[original_note_index].coordinates = positions[i]
-                        updated_notes_ids.add(self.notes[original_note_index].id)
-                        # print(f"Updated position for note {self.notes[original_note_index].id}")
+                for i, original_note_idx in enumerate(notes_with_embeddings_indices):
+                    self.notes[original_note_idx].position = positions[i]
             else:
                 print("Warning: Could not calculate positions or mismatch in position count.")
 
-        # 3. Save the new note to disk (it's already in self.notes)
-        print(f"Saving new note {new_note.id} to disk...")
-        self._save_note_to_disk(new_note)
-
-        # 4. Re-save all other notes that had their positions updated or cleared
-        print("Re-saving notes with updated positions...")
-        for i, note in enumerate(self.notes):
-            # Save if it's the new note (already done but good to be explicit if logic changes)
-            # or if its ID is in updated_notes_ids
-            # or if its vector is None and its coordinates were just cleared
-            if note.id == new_note.id:
-                continue # Already saved new_note explicitly
-
-            needs_resave = False
-            if note.id in updated_notes_ids:
-                needs_resave = True
-
-            # If a note lost its vector, its coordinates should be None.
-            # If they were just set to None, it needs resaving.
-            if note.semantic_vector is None and note.coordinates is not None: # Should have been cleared above
-                note.coordinates = None
-                needs_resave = True # Implicitly, its old coordinates are now invalid
-
-            if needs_resave:
-                print(f"Re-saving note {note.id} due to position update or clearing.")
-                self._save_note_to_disk(note)
-
-        print(f"Note {new_note.id} added and positions updated.")
+        self._save_db() # Save all notes (including new one and those with updated positions)
+        print(f"Note {new_note.id} processed and all notes saved.")
         return new_note
 
     def get_all_notes(self) -> list[Note]:
-        """Returns a copy of the current list of notes."""
-        return list(self.notes)
+        """Returns the current list of notes."""
+        # Consider returning a copy if direct modification of the list is a concern:
+        # return list(self.notes)
+        return self.notes
 
     def get_note_by_id(self, note_id: str) -> Note | None:
         """Retrieves a note from the internal list by its ID."""
@@ -174,39 +139,50 @@ class DataManager:
                 return note
         return None
 
+    def save_notes(self):
+        """Explicitly saves the current state of all notes to the database file."""
+        print("DataManager: Explicitly saving all notes...")
+        self._save_db()
+
+
     def refresh_all_positions(self) -> bool:
         """
-        Recalculates positions for all notes that have semantic vectors.
-        Saves notes whose positions have changed.
+        Recalculates positions for all notes that have embeddings.
+        Saves notes if positions have changed.
         """
         if self.position_calculator is None:
             print("Error: PositionCalculator not initialized. Cannot refresh positions.")
             return False
 
         print("Refreshing all note positions...")
-        all_valid_vectors = []
-        notes_with_vectors_indices = []
+        all_embeddings = []
+        notes_with_embeddings_indices = []
 
         for i, note in enumerate(self.notes):
-            if note.semantic_vector is not None:
-                all_valid_vectors.append(note.semantic_vector)
-                notes_with_vectors_indices.append(i)
+            if hasattr(note, 'embedding') and note.embedding is not None:
+                all_embeddings.append(note.embedding)
+                notes_with_embeddings_indices.append(i)
 
-        if not all_valid_vectors:
-            print("No valid semantic vectors found to calculate positions.")
+        if not all_embeddings:
+            print("No valid embeddings found to calculate positions.")
             return False
 
-        positions = self.position_calculator.calculate_positions(all_valid_vectors)
+        positions = self.position_calculator.calculate_positions(all_embeddings)
         updated_count = 0
-        if positions is not None and len(positions) == len(all_valid_vectors):
+        if positions is not None and len(positions) == len(all_embeddings):
             print(f"New positions calculated for {len(positions)} notes.")
-            for i, pos_index in enumerate(notes_with_vectors_indices):
-                original_note_index = pos_index
-                if self.notes[original_note_index].coordinates != positions[i]:
-                    self.notes[original_note_index].coordinates = positions[i]
-                    self._save_note_to_disk(self.notes[original_note_index])
-                    updated_count +=1
-            print(f"{updated_count} notes had their positions updated and saved.")
+            needs_save = False
+            for i, original_note_idx in enumerate(notes_with_embeddings_indices):
+                if self.notes[original_note_idx].position != positions[i]:
+                    self.notes[original_note_idx].position = positions[i]
+                    updated_count += 1
+                    needs_save = True
+
+            if needs_save:
+                self._save_db()
+                print(f"{updated_count} notes had their positions updated and saved.")
+            else:
+                print("No positions needed updating.")
             return True
         else:
             print("Warning: Could not calculate positions or mismatch in position count during refresh.")
@@ -224,22 +200,24 @@ class DataManager:
 
         print("Regenerating all embeddings...")
         updated_count = 0
-        vectors_changed = False
+        embeddings_changed = False
         for note in self.notes:
-            old_vector = note.semantic_vector
-            new_vector = self.semantic_analyzer.generate_embedding(note.content)
-            if new_vector is not None:
-                if new_vector != old_vector:
-                    note.semantic_vector = new_vector
-                    self._save_note_to_disk(note) # Save note if embedding changed
+            old_embedding = note.embedding
+            # Assuming generate_embedding exists in SemanticAnalyzer and takes text
+            new_embedding = self.semantic_analyzer.generate_embedding(note.content)
+            if new_embedding is not None:
+                if new_embedding != old_embedding:
+                    note.embedding = new_embedding
                     updated_count += 1
-                    vectors_changed = True
+                    embeddings_changed = True
             else:
                 print(f"Warning: Failed to generate new embedding for note {note.id}")
 
-        print(f"{updated_count} notes had their embeddings updated and saved.")
+        if embeddings_changed:
+            self._save_db() # Save all notes if any embedding changed
+            print(f"{updated_count} notes had their embeddings updated and saved.")
 
-        if vectors_changed or force_recalculation:
+        if embeddings_changed or force_recalculation:
             print("Embeddings changed or recalculation forced, now refreshing all positions.")
             self.refresh_all_positions()
 
